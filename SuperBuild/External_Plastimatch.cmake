@@ -3,6 +3,13 @@ set(proj Plastimatch)
 
 # Set dependency list
 set(${proj}_DEPENDS "")
+if(DEFINED Slicer_SOURCE_DIR)
+  list(APPEND ${proj}_DEPENDS
+    DCMTK
+    ITK
+    VTK
+    )
+endif()
 
 # Include dependent projects if any
 ExternalProject_Include_Dependencies(${proj} PROJECT_VAR proj)
@@ -20,13 +27,13 @@ if(NOT DEFINED ${proj}_DIR AND NOT ${CMAKE_PROJECT_NAME}_USE_SYSTEM_${proj})
 
   ExternalProject_SetIfNotDefined(
     ${CMAKE_PROJECT_NAME}_${proj}_GIT_REPOSITORY
-    "https://gitlab.com/plastimatch/plastimatch.git" # Gitlab only support https for anonymous checkout
+    "${EP_GIT_PROTOCOL}://github.com/SlicerRt/plastimatch.git"
     QUIET
     )
 
   ExternalProject_SetIfNotDefined(
     ${CMAKE_PROJECT_NAME}_${proj}_GIT_TAG
-    "2e729bc2c7c4eaa51184ed0acb23d91e615a7ff8"
+    "6307b2193f48724a31c6b735516eeb50abb14b62" # slicerrt-1.9.2-2021.03.03-6307b219
     QUIET
     )
 
@@ -76,6 +83,7 @@ if(NOT DEFINED ${proj}_DIR AND NOT ${CMAKE_PROJECT_NAME}_USE_SYSTEM_${proj})
       -DPLM_CONFIG_INSTALL_LIBRARIES:BOOL=ON
       -DPLM_PREFER_SYSTEM_DLIB:BOOL=OFF
       -DPLMLIB_CONFIG_ENABLE_REGISTER:BOOL=TRUE
+      -DPLMLIB_CONFIG_ENABLE_RECONSTRUCT:BOOL=TRUE
       -DPLMLIB_CONFIG_ENABLE_DOSE:BOOL=TRUE
       ${EXTERNAL_PROJECT_OPTIONAL_CMAKE_CACHE_ARGS}
     INSTALL_COMMAND ""

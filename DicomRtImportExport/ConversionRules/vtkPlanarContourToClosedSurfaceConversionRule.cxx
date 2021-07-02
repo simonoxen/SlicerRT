@@ -28,6 +28,7 @@
 #include <vtkImageStencil.h>
 #include <vtkLine.h>
 #include <vtkMarchingSquares.h>
+#include <vtkPlane.h>
 #include <vtkPolyDataToImageStencil.h>
 #include <vtkPolygon.h>
 #include <vtkPriorityQueue.h>
@@ -37,13 +38,16 @@
 #include <vtkTransformPolyDataFilter.h>
 #include <vtkUnstructuredGrid.h>
 
+// vtkAddon includes
+#include <vtkAddonMathUtilities.h>
+
 // STD includes
 #include <algorithm>
 
 // SegmentationCore includes
 #if Slicer_VERSION_MAJOR >= 5 || (Slicer_VERSION_MAJOR >= 4 && Slicer_VERSION_MINOR >= 11)
 #include <vtkSegment.h>
-#endif 
+#endif
 
 // Directions used for dynamic programming table backtracking
 enum BacktrackDirection
@@ -78,6 +82,12 @@ vtkPlanarContourToClosedSurfaceConversionRule::vtkPlanarContourToClosedSurfaceCo
 
   this->ConversionParameters[this->GetDefaultSliceThicknessParameterName()] = std::make_pair("0.0",
     "Default thickness for contours if slice spacing cannot be calculated.");
+  this->ConversionParameters[this->GetEndCappingParameterName()] = std::make_pair("1",
+    "Create end cap to close surface inside contours on the top and bottom of the structure.\n"
+    "0 = leave contours open on surface exterior.\n"
+    "1 (default) = close surface by generating smooth end caps.\n"
+    "2 = close surface by generating straight end caps."
+  );
 }
 
 //----------------------------------------------------------------------------
@@ -307,7 +317,10 @@ bool vtkPlanarContourToClosedSurfaceConversionRule::Convert(vtkDataObject* sourc
   }
 
   // Triangulate all contours which are exposed.
-  this->EndCapping(inputContoursCopy, outputPolygons, lineTriganulatedToAbove, lineTriganulatedToBelow);
+  if (vtkVariant(this->GetConversionParameter(this->GetEndCappingParameterName())).ToInt() != EndCappingModes::None)
+  {
+    this->EndCapping(inputContoursCopy, outputPolygons, lineTriganulatedToAbove, lineTriganulatedToBelow);
+  }
 
   // Initialize the output data.
   closedSurfacePolyData->SetPoints(outputPoints);
@@ -1134,7 +1147,7 @@ void vtkPlanarContourToClosedSurfaceConversionRule::EndCapping(vtkPolyData* inpu
           vtkSmartPointer<vtkLine> newLine = vtkSmartPointer<vtkLine>::New();
           newLine->DeepCopy(inputROIPoints->GetCell(newLineId));
 
-          this->TriangulateContourInterior(newLine, outputPolygons, true);
+          this->TriangulateContourInterior(newLine, outputPolygons, direction == CAPPING_ABOVE);
 
           vtkSmartPointer<vtkPolyData> linePolyData = vtkSmartPointer<vtkPolyData>::New();
           linePolyData->SetPoints(newLine->GetPoints());
@@ -1253,6 +1266,68 @@ double vtkPlanarContourToClosedSurfaceConversionRule::GetSpacingBetweenLines(vtk
 
 //----------------------------------------------------------------------------
 void vtkPlanarContourToClosedSurfaceConversionRule::CreateEndCapContour(vtkPolyData* inputROIPoints, vtkLine* inputLine, vtkCellArray* outputLines, double lineSpacing)
+{
+  if (!inputROIPoints)
+  {
+    vtkErrorMacro("CreateEndCapContour: invalid vtkPolyData");
+    return;
+  }
+
+  if (!inputLine)
+  {
+    vtkErrorMacro("CreateEndCapContour: invalid vtkLine");
+    return;
+  }
+
+  if (!outputLines)
+  {
+    vtkErrorMacro("CreateEndCapContour: invalid vtkCellArray");
+  }
+
+  if (vtkVariant(this->GetConversionParameter(this->GetEndCappingParameterName())).ToInt() == EndCappingModes::Smooth)
+  {
+    this->CreateSmoothEndCapContour(inputROIPoints, inputLine, outputLines, lineSpacing);
+  }
+  else if (vtkVariant(this->GetConversionParameter(this->GetEndCappingParameterName())).ToInt() == EndCappingModes::Straight)
+  {
+    this->CreateStraightEndCapContour(inputROIPoints, inputLine, outputLines, lineSpacing);
+  }
+}
+
+//----------------------------------------------------------------------------
+void vtkPlanarContourToClosedSurfaceConversionRule::CreateStraightEndCapContour(vtkPolyData* inputROIPoints, vtkLine* inputLine, vtkCellArray* outputLines, double lineSpacing)
+{
+  if (!inputROIPoints)
+  {
+    vtkErrorMacro("CreateEndCapContour: invalid vtkPolyData");
+    return;
+  }
+
+  if (!inputLine)
+  {
+    vtkErrorMacro("CreateEndCapContour: invalid vtkLine");
+    return;
+  }
+
+  if (!outputLines)
+  {
+    vtkErrorMacro("CreateEndCapContour: invalid vtkCellArray");
+  }
+
+  vtkSmartPointer<vtkPoints> inputPoints = inputROIPoints->GetPoints();
+  vtkNew<vtkIdList> endCapLine;
+  for (int i = 0; i < inputLine->GetNumberOfPoints(); ++i)
+  {
+    double endCapPoint[3] = { 0.0, 0.0, 0.0 };
+    inputPoints->GetPoint(inputLine->GetPointId(i), endCapPoint);
+    endCapPoint[2] += lineSpacing / 2.0;
+    endCapLine->InsertNextId(inputPoints->InsertNextPoint(endCapPoint));
+  }
+  outputLines->InsertNextCell(endCapLine);
+}
+
+//----------------------------------------------------------------------------
+void vtkPlanarContourToClosedSurfaceConversionRule::CreateSmoothEndCapContour(vtkPolyData* inputROIPoints, vtkLine* inputLine, vtkCellArray* outputLines, double lineSpacing)
 {
   if (!inputROIPoints)
   {
@@ -1840,7 +1915,7 @@ void vtkPlanarContourToClosedSurfaceConversionRule::CalculateContourNormal(vtkPo
 {
   vtkSmartPointer<vtkIdList> currentContour = vtkSmartPointer<vtkIdList>::New();
 
-  double meshNormalSum[3] = { 0, 0, 0 };
+  double averageNormalSum[3] = { 0, 0, 0 };
 
   int numberOfSmallContours = 0;
   int currentContourIndex = 0;
@@ -1853,14 +1928,17 @@ void vtkPlanarContourToClosedSurfaceConversionRule::CalculateContourNormal(vtkPo
     extract->SetInputData(inputPolyData);
     extract->AddCellRange(currentContourIndex, currentContourIndex);
     extract->Update();
-
     if (extract->GetOutput()->GetNumberOfPoints() > minimumContourSize)
     {
-      vtkNew<vtkTextureMapToPlane> textureMapToPlane;
-      textureMapToPlane->SetInputConnection(extract->GetOutputPort());
-      textureMapToPlane->Update();
-      textureMapToPlane->GetNormal(contourNormal);
-      vtkMath::Add(contourNormal, meshNormalSum, meshNormalSum);
+      vtkNew<vtkPlane> plane;
+      vtkAddonMathUtilities::FitPlaneToPoints(extract->GetOutput()->GetPoints(), plane);
+      plane->GetNormal(contourNormal);
+      // Ensure that the normal faces the same direction as the average normal
+      if (vtkMath::Dot(contourNormal, averageNormalSum) < 0.0)
+      {
+        vtkMath::MultiplyScalar(contourNormal, -1.0);
+      }
+      vtkMath::Add(contourNormal, averageNormalSum, averageNormalSum);
     }
     else
     {
@@ -1871,14 +1949,14 @@ void vtkPlanarContourToClosedSurfaceConversionRule::CalculateContourNormal(vtkPo
 
   // All contours had less than the minimum number of points.
   // Return before divide by 0 error
-  if (numberOfSmallContours >= inputPolyData->GetNumberOfLines() || vtkMath::Norm(meshNormalSum) == 0.0)
+  if (numberOfSmallContours >= inputPolyData->GetNumberOfLines() || vtkMath::Norm(averageNormalSum) == 0.0)
   {
     return;
   }
 
   for (int i = 0; i < 3; ++i)
   {
-    outputNormal[i] = meshNormalSum[i] / (inputPolyData->GetNumberOfLines() - numberOfSmallContours);
+    outputNormal[i] = averageNormalSum[i] / (inputPolyData->GetNumberOfLines() - numberOfSmallContours);
   }
   vtkMath::Normalize(outputNormal);
 

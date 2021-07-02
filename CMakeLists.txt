@@ -71,9 +71,11 @@ message(STATUS "SLICERRT_ENABLE_EXPERIMENTAL_MODULES: " ${SLICERRT_ENABLE_EXPERI
 # add_subdirectory(DicomSroImportExport)
 # add_subdirectory(BatchProcessing)
 # add_subdirectory(RoomsEyeView)
+# add_subdirectory(DrrImageComputation)
 
 # add_subdirectory(PlastimatchPy)
 # add_subdirectory(PlmBspline)
+# add_subdirectory(PlmDrr)
 add_subdirectory(PlmLandwarp)
 # add_subdirectory(PlmRegister)
 
